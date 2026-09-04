@@ -1,0 +1,32 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Foundry / Solc cache
+cache/
+out/
+broadcast/
+
+# Pipeline temporary output & crops
+temp_faces/
+temp_crops/
+*.log
+.last_contract
+anvil_state.json
+audit_result.json
+test_report.json
+verification_report.json
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
