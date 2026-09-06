@@ -3,15 +3,17 @@ pragma solidity ^0.8.20;
 
 /**
  * @title FaceMatchRegistry
- * @dev Tamper-evident ledger for recording and verifying facial recognition matches
- *      linked to real-world social media and web discoveries.
+ * @dev Production-grade tamper-evident ledger for recording and independently
+ *      verifying multi-site biometric identity consensus records.
  */
 contract FaceMatchRegistry {
     error RecordNotFound(uint256 id);
+    error ConsensusNotFound(uint256 id);
     error InvalidInput();
 
+    // --- Single-Match Record (Legacy & Simple Match Support) ---
     struct MatchRecord {
-        bytes32 faceHash;         // SHA-256 / Keccak-256 hash of ArcFace 512-d embedding vector
+        bytes32 faceHash;         // SHA-256 hash of ArcFace 512-d embedding vector
         bytes32 matchHash;        // Cryptographic digest of discovered match payload
         string matchUrl;          // Discovered social media post or profile URL
         string platform;          // e.g. "Instagram", "Twitter/X", "LinkedIn", "Reddit", "Web"
@@ -20,11 +22,27 @@ contract FaceMatchRegistry {
         address recordedBy;       // Submitting address
     }
 
-    // Mapping from record ID to MatchRecord
+    // --- Multi-Site Identity Consensus Record ---
+    struct ConsensusRecord {
+        bytes32 faceHash;           // SHA-256 hash of ArcFace 512-d embedding vector
+        bytes32 merkleRoot;         // Merkle root combining face, site URLs, and avatar digests
+        string entityName;          // Finalized consensus entity/person name
+        string[] platforms;         // List of verified platforms (e.g. ["Twitter/X", "LinkedIn", "GitHub"])
+        string[] matchUrls;         // Discovered matching URLs across all sites
+        uint256 consensusScore;     // Scaled 0 - 10000 (e.g. 9840 = 98.40%)
+        uint256 verifiedSiteCount;  // Count of independent platforms in agreement
+        string metadataJson;        // Full forensic audit payload (per-site similarity scores, handles)
+        uint256 timestamp;          // Block timestamp
+        address recordedBy;         // Submitting wallet address
+    }
+
     mapping(uint256 => MatchRecord) private _records;
     uint256 public recordCount;
 
-    // Emitted when a new face match is permanently recorded
+    mapping(uint256 => ConsensusRecord) private _consensusRecords;
+    uint256 public consensusCount;
+
+    // Events
     event FaceMatchRecorded(
         uint256 indexed recordId,
         bytes32 indexed faceHash,
@@ -35,15 +53,96 @@ contract FaceMatchRegistry {
         address recordedBy
     );
 
+    event ConsensusMatchRecorded(
+        uint256 indexed consensusId,
+        bytes32 indexed faceHash,
+        bytes32 indexed merkleRoot,
+        string entityName,
+        uint256 consensusScore,
+        uint256 verifiedSiteCount,
+        uint256 timestamp,
+        address recordedBy
+    );
+
+    // ==========================================
+    // MULTI-SITE CONSENSUS LEDGER FUNCTIONS
+    // ==========================================
+
     /**
-     * @notice Records a verified facial match into the blockchain
-     * @param _faceHash Cryptographic hash of the face embedding
-     * @param _matchHash Cryptographic hash of the match data
-     * @param _matchUrl Discovered social media URL
-     * @param _platform Identified platform/domain
-     * @param _metadataJson JSON string with forensic details
-     * @return recordId The unique index of the created record
+     * @notice Records a verified cross-platform identity consensus into the blockchain
      */
+    function recordConsensusMatch(
+        bytes32 _faceHash,
+        bytes32 _merkleRoot,
+        string calldata _entityName,
+        string[] calldata _platforms,
+        string[] calldata _matchUrls,
+        uint256 _consensusScore,
+        uint256 _verifiedSiteCount,
+        string calldata _metadataJson
+    ) external returns (uint256) {
+        if (_verifiedSiteCount == 0 || _platforms.length != _matchUrls.length) {
+            revert InvalidInput();
+        }
+
+        uint256 id = consensusCount++;
+        _consensusRecords[id] = ConsensusRecord({
+            faceHash: _faceHash,
+            merkleRoot: _merkleRoot,
+            entityName: _entityName,
+            platforms: _platforms,
+            matchUrls: _matchUrls,
+            consensusScore: _consensusScore,
+            verifiedSiteCount: _verifiedSiteCount,
+            metadataJson: _metadataJson,
+            timestamp: block.timestamp,
+            recordedBy: msg.sender
+        });
+
+        emit ConsensusMatchRecorded(
+            id,
+            _faceHash,
+            _merkleRoot,
+            _entityName,
+            _consensusScore,
+            _verifiedSiteCount,
+            block.timestamp,
+            msg.sender
+        );
+
+        return id;
+    }
+
+    /**
+     * @notice Retrieves a multi-site consensus record by ID
+     */
+    function getConsensusRecord(uint256 _id) external view returns (ConsensusRecord memory) {
+        if (_id >= consensusCount) {
+            revert ConsensusNotFound(_id);
+        }
+        return _consensusRecords[_id];
+    }
+
+    /**
+     * @notice Verifies whether a supplied face hash and Merkle root match the immutable record
+     */
+    function verifyConsensusRecord(
+        uint256 _id,
+        bytes32 _expectedFaceHash,
+        bytes32 _expectedMerkleRoot
+    ) external view returns (bool isVerified, uint256 consensusScore, uint256 siteCount, string memory entityName) {
+        if (_id >= consensusCount) {
+            revert ConsensusNotFound(_id);
+        }
+        ConsensusRecord storage rec = _consensusRecords[_id];
+        bool valid = (rec.faceHash == _expectedFaceHash && rec.merkleRoot == _expectedMerkleRoot);
+        return (valid, rec.consensusScore, rec.verifiedSiteCount, rec.entityName);
+    }
+
+    // ==========================================
+    // SINGLE-MATCH FUNCTIONS (BACKWARD COMPAT)
+    // ==========================================
+
     function recordMatch(
         bytes32 _faceHash,
         bytes32 _matchHash,
@@ -75,11 +174,6 @@ contract FaceMatchRegistry {
         return id;
     }
 
-    /**
-     * @notice Retrieves a record by ID
-     * @param _id The record identifier
-     * @return The MatchRecord struct
-     */
     function getRecord(uint256 _id) external view returns (MatchRecord memory) {
         if (_id >= recordCount) {
             revert RecordNotFound(_id);
@@ -87,13 +181,6 @@ contract FaceMatchRegistry {
         return _records[_id];
     }
 
-    /**
-     * @notice Verifies whether a supplied face hash and match hash match the recorded values
-     * @param _id The record identifier
-     * @param _expectedFaceHash Expected hash of face embedding
-     * @param _expectedMatchHash Expected hash of match metadata
-     * @return isVerified True if both hashes match the immutable on-chain record
-     */
     function verifyRecord(
         uint256 _id,
         bytes32 _expectedFaceHash,

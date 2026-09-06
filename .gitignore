@@ -21,9 +21,10 @@ temp_crops/
 *.log
 .last_contract
 anvil_state.json
-audit_result.json
-test_report.json
-verification_report.json
+*_audit.json
+*audit*.json
+*report*.json
+implementation_plan.md
 
 # IDE & OS
 .vscode/

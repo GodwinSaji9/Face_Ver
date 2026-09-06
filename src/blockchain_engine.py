@@ -3,8 +3,9 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from web3 import Web3
 from web3.exceptions import Web3Exception
 from src.utils import to_bytes32, format_bytes32_hex
@@ -35,6 +36,27 @@ class BlockchainRecordResult:
 
 
 @dataclass
+class BlockchainConsensusResult:
+    consensus_id: int
+    contract_address: str
+    tx_hash: str
+    block_number: int
+    gas_used: int
+    face_hash: str
+    merkle_root: str
+    entity_name: str
+    consensus_score: float
+    verified_site_count: int
+    platforms: List[str]
+    match_urls: List[str]
+    recorded_by: str
+    timestamp: int
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class OnChainVerificationResult:
     record_id: int
     is_verified: bool
@@ -44,6 +66,27 @@ class OnChainVerificationResult:
     on_chain_match_hash: str
     on_chain_url: str
     on_chain_platform: str
+    on_chain_timestamp: int
+    recorded_by: str
+    metadata: Dict[str, Any]
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class OnChainConsensusVerificationResult:
+    consensus_id: int
+    is_verified: bool
+    face_hash_matches: bool
+    merkle_root_matches: bool
+    on_chain_face_hash: str
+    on_chain_merkle_root: str
+    entity_name: str
+    consensus_score: float
+    verified_site_count: int
+    platforms: List[str]
+    match_urls: List[str]
     on_chain_timestamp: int
     recorded_by: str
     metadata: Dict[str, Any]
@@ -167,6 +210,23 @@ class BlockchainEngine:
         except Exception:
             return False
 
+    def _get_resilient_tx_params(self, gas_limit: int = 800_000) -> Dict[str, Any]:
+        """
+        Dynamically estimates gas price with safety buffer and uses pending nonce (Iteration 15).
+        Prevents transaction underpricing and nonce collision.
+        """
+        nonce = self.w3.eth.get_transaction_count(self.account.address, "pending")
+        base_gas_price = self.w3.eth.gas_price
+        buffered_gas_price = int(base_gas_price * 1.15) if base_gas_price > 0 else 1_000_000_000
+
+        return {
+            "from": self.account.address,
+            "nonce": nonce,
+            "gas": gas_limit,
+            "gasPrice": buffered_gas_price,
+            "chainId": self.w3.eth.chain_id,
+        }
+
     def deploy_contract(self) -> str:
         """
         Deploys FaceMatchRegistry.sol to the connected Anvil node.
@@ -175,14 +235,9 @@ class BlockchainEngine:
         self.ensure_connected()
         contract_factory = self.w3.eth.contract(abi=self.abi, bytecode=self.bytecode)
         
-        nonce = self.w3.eth.get_transaction_count(self.account.address)
-        tx = contract_factory.constructor().build_transaction({
-            "from": self.account.address,
-            "nonce": nonce,
-            "gas": 2_000_000,
-            "gasPrice": self.w3.eth.gas_price,
-            "chainId": self.w3.eth.chain_id,
-        })
+        tx = contract_factory.constructor().build_transaction(
+            self._get_resilient_tx_params(gas_limit=2_000_000)
+        )
 
         signed_tx = self.w3.eth.account.sign_transaction(tx, private_key=self.private_key)
         tx_hash = self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
@@ -226,20 +281,25 @@ class BlockchainEngine:
         match_bytes = to_bytes32(match_hash)
         metadata_json = json.dumps(metadata, sort_keys=True)
 
-        nonce = self.w3.eth.get_transaction_count(self.account.address)
+        try:
+            est_gas = contract.functions.recordMatch(
+                face_bytes,
+                match_bytes,
+                match_url,
+                platform,
+                metadata_json,
+            ).estimate_gas({"from": self.account.address})
+            gas_limit = int(est_gas * 1.30)
+        except Exception:
+            gas_limit = 1_000_000
+
         tx = contract.functions.recordMatch(
             face_bytes,
             match_bytes,
             match_url,
             platform,
             metadata_json,
-        ).build_transaction({
-            "from": self.account.address,
-            "nonce": nonce,
-            "gas": 500_000,
-            "gasPrice": self.w3.eth.gas_price,
-            "chainId": self.w3.eth.chain_id,
-        })
+        ).build_transaction(self._get_resilient_tx_params(gas_limit=gas_limit))
 
         signed_tx = self.w3.eth.account.sign_transaction(tx, private_key=self.private_key)
         tx_hash = self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
@@ -326,3 +386,144 @@ class BlockchainEngine:
             recorded_by=on_chain_recorder,
             metadata=metadata_dict,
         )
+
+    def record_consensus_match(
+        self,
+        face_hash: str,
+        merkle_root: str,
+        entity_name: str,
+        platforms: List[str],
+        match_urls: List[str],
+        consensus_score: float,
+        verified_site_count: int,
+        metadata: Dict[str, Any],
+    ) -> BlockchainConsensusResult:
+        """
+        Submits a multi-site verified identity consensus record to the smart contract.
+        """
+        self.ensure_connected()
+        contract = self.get_contract()
+
+        face_bytes = to_bytes32(face_hash)
+        merkle_bytes = to_bytes32(merkle_root)
+        score_scaled = int(round(consensus_score * 10000))
+        metadata_json = json.dumps(metadata, sort_keys=True)
+
+        try:
+            est_gas = contract.functions.recordConsensusMatch(
+                face_bytes,
+                merkle_bytes,
+                entity_name,
+                platforms,
+                match_urls,
+                score_scaled,
+                verified_site_count,
+                metadata_json,
+            ).estimate_gas({"from": self.account.address})
+            gas_limit = int(est_gas * 1.30)
+        except Exception:
+            gas_limit = 2_000_000
+
+        tx = contract.functions.recordConsensusMatch(
+            face_bytes,
+            merkle_bytes,
+            entity_name,
+            platforms,
+            match_urls,
+            score_scaled,
+            verified_site_count,
+            metadata_json,
+        ).build_transaction(self._get_resilient_tx_params(gas_limit=gas_limit))
+
+        signed_tx = self.w3.eth.account.sign_transaction(tx, private_key=self.private_key)
+        tx_hash = self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+
+        if receipt.status != 1:
+            raise RuntimeError(f"recordConsensusMatch transaction failed: {tx_hash.hex()}")
+
+        processed_logs = contract.events.ConsensusMatchRecorded().process_receipt(receipt)
+        if processed_logs:
+            consensus_id = processed_logs[0]["args"]["consensusId"]
+            block_timestamp = processed_logs[0]["args"]["timestamp"]
+        else:
+            consensus_id = contract.functions.consensusCount().call() - 1
+            block = self.w3.eth.get_block(receipt.blockNumber)
+            block_timestamp = block["timestamp"]
+
+        return BlockchainConsensusResult(
+            consensus_id=consensus_id,
+            contract_address=self.contract_address,
+            tx_hash="0x" + tx_hash.hex(),
+            block_number=receipt.blockNumber,
+            gas_used=receipt.gasUsed,
+            face_hash=face_hash,
+            merkle_root=merkle_root,
+            entity_name=entity_name,
+            consensus_score=consensus_score,
+            verified_site_count=verified_site_count,
+            platforms=platforms,
+            match_urls=match_urls,
+            recorded_by=self.account.address,
+            timestamp=block_timestamp,
+        )
+
+    def verify_consensus_record(
+        self,
+        consensus_id: int,
+        expected_face_hash: str,
+        expected_merkle_root: str,
+    ) -> OnChainConsensusVerificationResult:
+        """
+        Re-queries the blockchain to verify a multi-site consensus record for tamper-evidence.
+        """
+        self.ensure_connected()
+        contract = self.get_contract()
+
+        raw_record = contract.functions.getConsensusRecord(consensus_id).call()
+        on_chain_face_bytes = raw_record[0]
+        on_chain_merkle_bytes = raw_record[1]
+        on_chain_entity = raw_record[2]
+        on_chain_platforms = list(raw_record[3])
+        on_chain_urls = list(raw_record[4])
+        on_chain_score_scaled = raw_record[5]
+        on_chain_verified_count = raw_record[6]
+        on_chain_meta_raw = raw_record[7]
+        on_chain_ts = raw_record[8]
+        on_chain_recorder = raw_record[9]
+
+        expected_face_bytes = to_bytes32(expected_face_hash)
+        expected_merkle_bytes = to_bytes32(expected_merkle_root)
+
+        face_matches = (on_chain_face_bytes == expected_face_bytes)
+        merkle_matches = (on_chain_merkle_bytes == expected_merkle_bytes)
+
+        verify_res = contract.functions.verifyConsensusRecord(
+            consensus_id,
+            expected_face_bytes,
+            expected_merkle_bytes,
+        ).call()
+        contract_verified = verify_res[0]
+
+        try:
+            meta_dict = json.loads(on_chain_meta_raw)
+        except Exception:
+            meta_dict = {"raw": on_chain_meta_raw}
+
+        return OnChainConsensusVerificationResult(
+            consensus_id=consensus_id,
+            is_verified=(face_matches and merkle_matches and contract_verified),
+            face_hash_matches=face_matches,
+            merkle_root_matches=merkle_matches,
+            on_chain_face_hash=on_chain_face_bytes.hex(),
+            on_chain_merkle_root=on_chain_merkle_bytes.hex(),
+            entity_name=on_chain_entity,
+            consensus_score=float(on_chain_score_scaled / 10000.0),
+            verified_site_count=on_chain_verified_count,
+            platforms=on_chain_platforms,
+            match_urls=on_chain_urls,
+            on_chain_timestamp=on_chain_ts,
+            recorded_by=on_chain_recorder,
+            metadata=meta_dict,
+        )
+

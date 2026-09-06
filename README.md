@@ -1,238 +1,400 @@
-# Face ID + Blockchain Verification Pipeline
+# 🛡️ Face ID + Multi-Site Identity Consensus & Blockchain Pipeline
 
-[![Python](https://img.shields.io/badge/Python-3.13%2B-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![DeepFace](https://img.shields.io/badge/DeepFace-RetinaFace%20%2B%20ArcFace-orange.svg)](https://github.com/serengil/deepface)
 [![Blockchain](https://img.shields.io/badge/Blockchain-Foundry%20Anvil-yellow.svg)](https://github.com/foundry-rs/foundry)
+[![Solidity](https://img.shields.io/badge/Solidity-0.8.20-lightgrey.svg)](https://soliditylang.org/)
+[![Consensus](https://img.shields.io/badge/Consensus-Multi--Site%20Merkle%20Quorum-brightgreen.svg)]()
 [![CLI](https://img.shields.io/badge/CLI-Typer%20%2B%20Rich-green.svg)](https://typer.tiangolo.com/)
 [![License](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 
-An end-to-end provenance and identity pipeline that detects and encodes a face from a photo, discovers matching social media posts via genuine reverse-image search, and writes the match to a blockchain as an immutable, tamper-evident record.
+A biometric provenance and decentralized identity pipeline. It extracts 512-dimensional ArcFace facial embeddings from portrait imagery, simultaneously queries multiple web & social platforms (Twitter/X, LinkedIn, GitHub, Instagram, Web profiles), extracts scraped profile avatars, performs biometric cosine similarity cross-verification, evaluates cross-platform identity consensus, and anchors a cryptographic Merkle root to a Foundry Anvil smart contract ledger.
+
+> **⚠️ Intended Use & Scope**
+> This is an academic/portfolio project demonstrating biometric matching, multi-source identity consensus, and blockchain provenance techniques. It is **not** intended for surveillance, stalking, or identifying private individuals without their consent. All example output in this README uses a fictional persona. Facial recognition and cross-platform profile matching are subject to legal restrictions in many jurisdictions (e.g. GDPR in the EU, BIPA in Illinois) and to the terms of service of the platforms queried — review these before using this pipeline on real subjects or deploying it beyond a local/offline demo.
 
 ---
 
-## Architecture Overview
+## 📑 Table of Contents
+- [Architecture & Data Flow](#-architecture--data-flow)
+- [Key Features & Engineering Highlights](#-key-features--engineering-highlights)
+- [Multi-Site Identity Consensus Protocol](#-multi-site-identity-consensus-protocol)
+- [Disparate Entities Protocol](#-disparate-entities-protocol)
+- [Smart Contract Ledger (`FaceMatchRegistry.sol`)](#-smart-contract-ledger-facematchregistrysol)
+- [Installation & Setup](#-installation--setup)
+- [Quick Start](#-quick-start)
+- [CLI Usage Guide](#-cli-usage-guide)
+- [Terminal Output Previews](#-terminal-output-previews)
+- [Automated Test Suite](#-automated-test-suite)
+- [Project Directory Layout](#-project-directory-layout)
+- [Known Limitations](#-known-limitations)
+- [Contributing](#-contributing)
+- [License](#-license)
+
+---
+
+## 🏛️ Architecture & Data Flow
 
 ```mermaid
 flowchart TD
-    subgraph S1["1. Biometric Ingestion & Encoding"]
-        A["📸 Input Portrait"] --> B["👁️ RetinaFace Face Detection\n& Landmark Alignment"]
-        B --> C["✂️ High-Resolution Face Crop"]
-        C --> D["🧠 ArcFace Deep Embedding\n(512-dimensional Vector)"]
-        D --> E["🔐 Deterministic SHA-256\nFace Fingerprint"]
-    end
-
-    subgraph S2["2. Live Reverse Image Search"]
-        C --> F["🌐 SerpAPI Google Lens Engine"]
-        F --> G["🔍 Visual Match Candidates"]
-        G --> H["🏷️ Social Media Domain Filter\n(Twitter/X, Instagram, LinkedIn, etc.)"]
-        H --> I["📄 Top Social Match Discovery"]
-        I --> J["🔐 Deterministic SHA-256\nMatch Fingerprint"]
-    end
-
-    subgraph S3["3. Blockchain Ledger (Foundry Anvil)"]
-        E --> K["⛓️ FaceMatchRegistry.sol\nrecordMatch(bytes32, bytes32, ...)"]
-        J --> K
-        K --> L["📦 Block Mined with Tx Hash,\nGas Used, & Record ID"]
-    end
-
-    subgraph S4["4. Independent Verification"]
-        L --> M["🔎 getRecord(recordId)"]
-        M --> N["⚖️ verifyRecord(recordId, faceHash, matchHash)"]
-        N --> O{"Hashes Match?"}
-        O -- Yes --> P["✅ AUTHENTIC & TAMPER-EVIDENT"]
-        O -- No --> Q["❌ REJECTED / TAMPER DETECTED"]
-    end
+    A["📸 Input Portrait (File Dialog or Path)"] --> B["🧠 RetinaFace + ArcFace\n(Biometric 512-d Vector + Blur Variance Gate)"]
+    B --> C["⚡ 2-Stage Multi-Site Search Engine\n(Google Lens + Concurrent Platform Queries)"]
+    
+    C --> D1["🌐 Twitter / X"]
+    C --> D2["🌐 LinkedIn"]
+    C --> D3["🌐 GitHub"]
+    C --> D4["🌐 Instagram"]
+    C --> D5["🌐 Web (Wikipedia / IMDb)"]
+    
+    D1 --> E["🔍 Profile Normalization & Avatar Extractor"]
+    D2 --> E
+    D3 --> E
+    D4 --> E
+    D5 --> E
+    
+    E --> F["🧬 Cross-Site ArcFace Biometric Re-Verification\n(Cosine Similarity: Scraped Avatar vs Input)"]
+    F --> G["🤝 Identity Consensus Engine\n(Biometric Agreement ≥ 0.70 + Name Clustering)"]
+    
+    G -->|Consensus Quorum Reached| H["🌳 Merkle Tree Derivation\n(Face Hash + Verified URLs + Avatar Hashes)"]
+    G -->|Disparate Entities Conflict| R["🔄 Adaptive Pipeline Retry (Up to 2 Retries)\nAdjust Crop Padding (±5%) & Re-Query"]
+    R -->|Retry Succeeded| H
+    R -->|Still Disparate After 3 Attempts| S["⚠️ Disparate Entities Forensic Breakdown\n(Full visibility into all conflicting finds)"]
+    S --> X["🛑 Gatekeeper Suspension\n(Ledger upload suspended to prevent poisoning)"]
+    
+    H --> I["⛓️ Foundry Anvil EVM (Chain ID: 31337)\nrecordConsensusMatch() on FaceMatchRegistry.sol"]
+    I --> J["✅ Independent On-Chain Verification Audit\nverifyConsensusRecord() view call"]
 ```
 
 ---
 
-## Key Features
+## 🌟 Key Features & Engineering Highlights
 
-1. **RetinaFace Detection & Alignment**: Multi-task face detector that isolates face bounding boxes and facial landmarks (eyes, nose, mouth corners) even under angled poses.
-2. **ArcFace 512-D Biometric Embeddings**: Employs Additive Angular Margin Loss (`ArcFace`) to generate highly discriminative, unit-normalized 512-dimensional facial representations.
-3. **Genuine Reverse Image Search**: Queries Google Lens via SerpAPI with the cropped face image, extracting real URLs, titles, and sources while prioritizing authentic social media platforms.
-4. **Foundry Anvil Blockchain**: Deploys the `FaceMatchRegistry.sol` Solidity smart contract to a local Ethereum node (`http://127.0.0.1:8545`) with instant block mining and zero transaction friction.
-5. **Cryptographic Tamper-Evidence**: Both biometric vector data and social post metadata are fingerprinted using deterministic SHA-256 and verified on-chain via smart contract view functions.
-6. **Modern Typer + Rich CLI**: Formatted terminal output with styled tables, progress spinners, detailed logs, and optional JSON export.
-
----
-
-## Project Structure
-
-```
-Task3 HHG/
-├── contracts/
-│   └── FaceMatchRegistry.sol     # Solidity 0.8.20 tamper-evident registry
-├── src/
-│   ├── __init__.py
-│   ├── face_engine.py            # RetinaFace detector + ArcFace 512-d embedder
-│   ├── search_engine.py          # SerpAPI Google Lens reverse image search
-│   ├── blockchain_engine.py      # Foundry Anvil Web3 connector & contract client
-│   ├── contract_artifact.json    # Precompiled ABI and EVM Bytecode
-│   └── utils.py                  # Cryptographic hashing, platform detector, cropper
-├── tests/
-│   └── test_pipeline.py          # Automated pytest test suite (5/5 passing)
-├── samples/
-│   ├── test_face.jpg             # High-quality sample portrait
-│   └── lena.jpg                  # Classic benchmark image
-├── pipeline.py                   # Main Typer CLI: end-to-end execution
-├── verify.py                     # Standalone Typer CLI: on-chain verification
-├── foundry.toml                  # Foundry project configuration
-├── requirements.txt              # Python dependencies
-├── .env.example                  # Environment variables template
-├── .gitignore
-└── README.md                     # Documentation
-```
+- **RetinaFace + ArcFace Biometric Foundation**: Cascades RetinaFace facial detection with ArcFace 512-dimensional vector extraction, pupil landmark affine alignment, and Laplacian blur variance filtering ($\text{Var}(\nabla^2 I)$).
+- **Two-Stage Multi-Site Search Engine**:
+  - *Stage 1 (Visual Identity)*: Dispatches high-resolution cropped face to Google Lens to discover visual matches and extract knowledge graph entities.
+  - *Stage 2 (Concurrent Profile Resolution)*: Uses the canonical name to concurrently query Google for official profiles across **Twitter/X**, **LinkedIn**, **GitHub**, **Instagram**, and **Web** (Wikipedia/IMDb).
+  - *Strict URL Validation & Normalization*: Automatically rejects news articles, fan clubs, feeds, and code blobs; normalizes URLs to canonical root profiles.
+- **Cross-Site Biometric Re-Verification**: Scrapes profile avatars and computes mathematical cosine similarity against the input portrait:
+  $$\text{Cosine Sim}(u, v) = \frac{\mathbf{u} \cdot \mathbf{v}}{\|\mathbf{u}\|\|\mathbf{v}\|}$$
+- **Weighted Multi-Site Consensus Engine**:
+  Evaluates cross-platform quorum using a calibrated formula:
+  $$\text{Consensus Score} = 0.70 \times \bar{S}_{\text{biometric}} + 0.20 \times S_{\text{entity}} + 0.10 \times \min\left(1.0, \frac{N_{\text{verified}}}{3}\right)$$
+- **Cryptographic Merkle Tree Integrity**: Aggregates the biometric fingerprint, platform identifiers, matching URLs, and avatar digests into an immutable Merkle root.
+- **Foundry Anvil Smart Contract Ledger**: Implements `FaceMatchRegistry.sol` (Solidity 0.8.20) with custom EVM errors, packed storage slots, and independent cryptographic proof verification.
+- **Rich Terminal CLI Experience**: Native OS file chooser, ANSI terminal hyperlinks for direct clicking, real-time spinners, consensus matrix tables, and forensic JSON exports.
 
 ---
 
-## Prerequisites
+## 🤝 Multi-Site Identity Consensus Protocol
 
-1. **Python 3.10+** (tested and verified on Python 3.13)
-2. **Foundry (`anvil` & `forge`)**
-   - **Windows:** Download prebuilt binary from [Foundry GitHub Releases](https://github.com/foundry-rs/foundry/releases) to `~/.foundry/bin/` or install via Git Bash:
-     ```bash
-     curl -L https://foundry.paradigm.xyz | bash
-     foundryup
-     ```
-   - **Linux / macOS:**
-     ```bash
-     curl -L https://foundry.paradigm.xyz | bash
-     foundryup
-     ```
-3. **SerpAPI Key (Optional for live search, free tier available)**:
-   - Create a free account at [serpapi.com](https://serpapi.com) (100 free searches/month).
-   - Add your key to `.env` or use `--demo-search` for offline demonstration mode.
+Before any biometric record is written to the blockchain, the pipeline enforces a strict multi-site consensus quorum:
+
+1. **Platform Breadth**: At least 2 independent platforms must return verified profiles matching the person.
+2. **Biometric Similarity Floor**: Every platform profile must demonstrate biometric cosine similarity $\ge 0.70$ (or verified canonical visual match correlation).
+3. **Entity Name Alignment**: Fuzzy string similarity between the discovered account name and canonical identity must satisfy $S_{\text{entity}} \ge 0.60$.
+4. **Authentic Handle Validation**: Reject fan clubs, fan pages, parody accounts, or aggregators using keyword boundary scanning (`fan`, `fc`, `club`, `update`, `tribute`, `parody`).
+5. **Legitimate Inactivity Handling (`⚪ NO PROFILE`)**: If a public figure does not maintain an account on a platform (e.g. an actor without GitHub), that platform is categorized as `⚪ NO PROFILE` without penalizing other verified platforms.
 
 ---
 
-## Installation
+## 🛡️ Disparate Entities Protocol
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/<your-username>/face-blockchain-pipeline.git
-   cd face-blockchain-pipeline
-   ```
+If cross-site queries yield conflicting identities (e.g., Twitter/X returns Person A while LinkedIn returns Person B):
 
-2. **Install Python dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Configure environment variables**:
-   ```bash
-   cp .env.example .env
-   ```
-   Edit `.env` to supply your `SERPAPI_KEY` (optional if using `--demo-search`).
-
-4. **Start Foundry Anvil node** (or let the CLI auto-detect it):
-   ```bash
-   anvil --port 8545
-   ```
+- **Automatic 3-Attempt Adaptive Retry**:
+  - *Attempt 1*: Base detection and search query.
+  - *Attempt 2 (Retry 1)*: Expands facial crop bounding box padding by $+5\%$ ($0.15$) and runs contrast-enhanced normalization.
+  - *Attempt 3 (Retry 2)*: Expands bounding box padding by $+10\%$ ($0.20$) and queries secondary disambiguation.
+- **Transparent Disparity Reporting (Zero Silent Aborts)**:
+  - If disparity persists across all 3 attempts, the pipeline does **not** crash or silently abort.
+  - Generates a full **Disparate Entities Report** documenting every find discovered across all platforms (Platform, URL, Extracted Name, Handle, Biometric Cosine Similarity).
+  - Documents the exact conflict rationale (e.g. *"Twitter/X returned Jordan Lee while LinkedIn returned Sam Patel"*).
+- **Gatekeeper Suspension**: Prevents writing conflicting biometric claims to the blockchain, safeguarding the integrity of the decentralized registry.
 
 ---
 
-## Usage
+## ⛓️ Smart Contract Ledger (`FaceMatchRegistry.sol`)
 
-### 1. Run the Full End-to-End Pipeline
-
-Execute the pipeline on an input image:
-
-```bash
-python pipeline.py --image samples/test_face.jpg --save-json verification_report.json
-```
-
-**Options & Flags:**
-```
-  -i, --image TEXT             Path to input photo [required]
-  -d, --detector TEXT          Face detector (retinaface, opencv, mtcnn) [default: retinaface]
-  -m, --model TEXT             Representation model (ArcFace, Facenet512, VGG-Face) [default: ArcFace]
-  -k, --serpapi-key TEXT       SerpAPI key for live searches (or set in .env)
-  -r, --rpc-url TEXT           Ethereum JSON-RPC URL [default: http://127.0.0.1:8545]
-  -c, --contract-address TEXT  Existing contract address (auto-deploys if omitted)
-      --demo-search            Use simulated search if no SerpAPI key is available
-  -o, --save-json TEXT         Path to export JSON report
-```
-
-### 2. Standalone On-Chain Verification
-
-Independently inspect any record on the blockchain and check its tamper-evidence:
-
-```bash
-python verify.py --record-id 0
-```
-
-### 3. Demonstrate Tamper-Evidence Defense
-
-Run an intentional tamper test to prove the smart contract detects and rejects altered data:
-
-```bash
-python verify.py --record-id 0 --tamper-test
-```
-*Output:*
-```
-═══ RUNNING SIMULATED TAMPER DEMONSTRATION ═══
-Testing altered face hash: 0000000000000000000000000000000000000000000000000000000000000000
-Smart contract verifyRecord() returned: False
-✅ Tamper defense verified! The blockchain contract successfully rejected the altered face hash.
-```
-
-### 4. Run Automated Test Suite
-
-Run the full test suite with `pytest`:
-
-```bash
-pytest tests/test_pipeline.py -v
-```
-
----
-
-## Blockchain & Smart Contract Details
-
-### Selected Blockchain: Foundry Anvil (Local Ethereum)
-
-- **Network:** Local Ethereum EVM Node
-- **Chain ID:** `31337`
-- **RPC Endpoint:** `http://127.0.0.1:8545`
-- **Why Anvil?**
-  - Instant deterministic block mining upon transaction submission.
-  - Zero gas costs with 10 pre-funded test accounts (10,000 ETH each).
-  - 100% standard Ethereum JSON-RPC compatibility (identical to Mainnet/Sepolia).
-  - Seamlessly upgradable to public testnets (e.g. Ethereum Sepolia, Arbitrum Sepolia, Base Sepolia) simply by updating `ANVIL_RPC_URL` and providing a funded private key.
-
-### Smart Contract: `FaceMatchRegistry.sol`
-
-The registry contract stores records on-chain in an immutable mapping:
+The `FaceMatchRegistry` contract maintains an immutable audit log of verified consensus events:
 
 ```solidity
-struct MatchRecord {
-    bytes32 faceHash;         // SHA-256 fingerprint of ArcFace 512-d embedding
-    bytes32 matchHash;        // SHA-256 fingerprint of discovered match metadata
-    string matchUrl;          // Discovered social media URL
-    string platform;          // e.g., "Twitter/X", "Instagram", "LinkedIn"
-    string metadataJson;      // Forensic details (detector, model, timestamp, title)
-    uint256 timestamp;        // Block timestamp
-    address recordedBy;       // Submitting wallet address
+struct ConsensusRecord {
+    bytes32 faceHash;           // SHA-256 hash of ArcFace 512-d embedding vector
+    bytes32 merkleRoot;         // Merkle root combining face, site URLs, and avatar digests
+    string entityName;          // Finalized consensus entity/person name
+    string[] platforms;         // List of verified platforms (e.g. ["Twitter/X", "LinkedIn", ...])
+    string[] matchUrls;         // Discovered matching URLs across all sites
+    uint256 consensusScore;     // Scaled 0 - 10000 (e.g. 9720 = 97.20%)
+    uint256 verifiedSiteCount;  // Count of independent platforms in agreement
+    string metadataJson;        // Full forensic audit payload
+    uint256 timestamp;          // EVM block timestamp
+    address recordedBy;         // Submitting wallet address
 }
 ```
 
-Key functions:
-- `recordMatch(...) external returns (uint256 recordId)`: Writes match to ledger and emits `FaceMatchRecorded` event.
-- `getRecord(uint256 id) external view returns (MatchRecord)`: Reads on-chain state.
-- `verifyRecord(uint256 id, bytes32 expectedFace, bytes32 expectedMatch) external view returns (bool)`: On-chain cryptographic validation check.
+### Key Functions
+- `recordConsensusMatch(...)`: Emits `ConsensusMatchRecorded` and stores the verified record.
+- `verifyConsensusRecord(recordId, expectedFaceHash, expectedMerkleRoot)`: Read-only cryptographic proof verification returning `(isVerified, faceMatches, merkleMatches, entityName)`.
 
 ---
 
-## Known Limitations
+## 🚀 Installation & Setup
 
-1. **SerpAPI Free Quota**: The free tier of SerpAPI permits 100 searches per month. For high-volume automated testing, a paid API key or `--demo-search` mode should be used.
-2. **Reverse Image Search Indexation**: Google Lens reverse searches depend on whether the face or photo is already indexed publicly on the web. Unreleased or purely private photos may return visually similar people rather than exact identity matches.
-3. **Local Blockchain Persistence**: By default, Anvil stores blockchain state in memory. If Anvil is restarted without `--dump-state state.json`, the chain restarts from block 0. The pipeline automatically detects whether the contract is deployed on the active chain and deploys a fresh instance if needed.
-4. **Lighting & Extreme Occlusion**: RetinaFace is robust to moderate angles, but severe occlusion (e.g., full motorcycle helmets or heavy distortion) will prevent face detection.
-5. **Proof-of-Concept Scope**: This pipeline is engineered for identity provenance, content authenticity, and anti-deepfake forensic verification. It is not intended for unconsented public surveillance.
+### Prerequisites
+- **Python 3.10+** (Tested on Python 3.13)
+- **Foundry Anvil** (Local EVM node, install via `foundryup` or [Foundry releases](https://github.com/foundry-rs/foundry))
+- **SerpAPI Key** (Free tier account at [serpapi.com](https://serpapi.com))
+
+### 1. Clone Repository & Setup Virtual Environment
+```bash
+git clone https://github.com/<your-username>/Task3-HHG.git
+cd Task3-HHG
+
+# Create and activate virtual environment
+python -m venv .venv
+# On Windows PowerShell:
+.venv\Scripts\Activate.ps1
+# On Linux/macOS:
+source .venv/bin/activate
+```
+
+### 2. Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Configure Environment Variables
+```bash
+cp .env.example .env
+```
+Edit `.env`:
+```ini
+SERPAPI_KEY=your_serpapi_key_here
+ANVIL_RPC_URL=http://127.0.0.1:8545
+```
+
+> **Note on SerpAPI usage:** the free tier includes a limited number of searches per month (check current limits at [serpapi.com/pricing](https://serpapi.com/pricing)). Each pipeline run against 5 platforms consumes multiple search calls, so budget accordingly if you're testing repeatedly.
+
+### 4. Start a Local Anvil Node
+```bash
+anvil
+```
+Leave this running in a separate terminal — the pipeline auto-deploys `FaceMatchRegistry.sol` to it on first use.
 
 ---
 
-## License
+## ⚡ Quick Start
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+The fastest way to see the full pipeline end-to-end, no API key required:
+
+```bash
+python pipeline.py --image samples/test_face.jpg --demo-search
+```
+
+This runs face detection, simulates multi-site profile matches, computes consensus, and anchors a record on your local Anvil chain — using the bundled sample image and mocked search results.
+
+---
+
+## 💻 CLI Usage Guide
+
+### 1. Interactive File Chooser Mode
+If executed without arguments, the pipeline automatically launches your system's native file dialog:
+```bash
+python pipeline.py
+```
+
+### 2. Run Pipeline with Explicit Image
+```bash
+python pipeline.py --image path/to/portrait.jpg
+```
+
+### 3. Export Forensic JSON Audit Report
+```bash
+python pipeline.py --image path/to/portrait.jpg --save-json audit_report.json
+```
+
+### 4. Offline Demonstration Mode
+Runs the complete multi-site consensus and blockchain workflow using simulated profiles (no API key required):
+```bash
+python pipeline.py --image samples/test_face.jpg --demo-search
+```
+
+### 5. Simulate Disparate Entities Conflict
+Demonstrates the adaptive 3-attempt retry loop and transparent conflict reporting:
+```bash
+python pipeline.py --image samples/test_face.jpg --demo-search --simulate-disparity
+```
+
+### 6. Independent On-Chain Verification
+Audit any record previously stored in the smart contract ledger:
+```bash
+python verify.py --record-id 1
+```
+
+### 7. On-Chain Tamper Defense Test
+Demonstrates the contract rejecting an injected or altered biometric hash:
+```bash
+python verify.py --record-id 1 --tamper-test
+```
+
+---
+
+## 🖥️ Terminal Output Previews
+
+### Step 1: Face Detection & ArcFace Biometrics
+```
+═══ STEP 1: FACE DETECTION & ARC-FACE ENCODING ═══
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Property                   ┃ Value                                                            ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Input Image                │ C:\Users\<you>\Downloads\portrait.jpg                            │
+│ Face Detected              │ ✅ Yes                                                           │
+│ Detector Backend           │ retinaface                                                       │
+│ Representation Model       │ ArcFace                                                          │
+│ Bounding Box (x,y,w,h)     │ 128, 90, 227, 319                                                │
+│ Confidence Score           │ 1.0000                                                           │
+│ Embedding Dimensions       │ 512 floats (ArcFace)                                             │
+│ Face Fingerprint (SHA-256) │ 12f395f178eecae689bd573f876b1cabc26953a3961b7ac2fb7ce04cb2d97377 │
+│ Blur Variance              │ 278.51 (Sharp)                                                   │
+│ Cropped Face Path          │ temp_crops\img2_face_crop.jpg                                    │
+└────────────────────────────┴──────────────────────────────────────────────────────────────────┘
+```
+
+### Step 2: Cross-Site Identity Consensus Matrix
+```
+═══ STEP 2: SIMULTANEOUS MULTI-SITE SEARCH & IDENTITY CONSENSUS ═══
+                               Cross-Site Identity Consensus Matrix                               
+┏━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━┓
+┃ Site / Platform ┃ Discovered Profile URL        ┃ Extracted Entity / Handle    ┃ Facial Sim ┃ Verdict     ┃
+┡━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━┩
+│ Twitter/X       │ https://x.com/alexrivera_dev  │ Alex Rivera (@alexrivera_dev)│ 96.0%      │ ✅ SAME     │
+│ LinkedIn        │ https://www.linkedin.com/in/… │ Alex Rivera (@alex-rivera)   │ 96.0%      │ ✅ SAME     │
+│ GitHub          │ [No authentic profile found]  │ N/A                          │ N/A        │ ⚪ NO PROF  │
+│ Instagram       │ https://www.instagram.com/al… │ Alex Rivera (@alexrivera_dev)│ 96.0%      │ ✅ SAME     │
+│ Web             │ https://example.org/team/ale… │ Alex Rivera                  │ 96.0%      │ ✅ SAME     │
+└─────────────────┴━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┴━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┴━━━━━━━━━━━━┴━━━━━━━━━━━━━┘
+
+🔗 Authenticated Direct Profile Links:
+  • Twitter/X  → https://x.com/alexrivera_dev (Alex Rivera)
+  • LinkedIn   → https://www.linkedin.com/in/alex-rivera-593574111 (Alex Rivera)
+  • GitHub     → No authentic profile found
+  • Instagram  → https://www.instagram.com/alexrivera_dev (Alex Rivera)
+  • Web        → https://example.org/team/alex-rivera (Alex Rivera)
+
+╭───────────────────────────────────────── Consensus Verification Quorum ─────────────────────────────────────────╮
+│ 🤝 IDENTITY CONSENSUS REACHED: ALL SITES FINALIZE ON THE SAME PERSON                                            │
+│                                                                                                                 │
+│ • Finalized Person: Alex Rivera (fictional demo persona)                                                        │
+│ • Verified Sites Agreement: 4 of 4 platforms in full consensus                                                  │
+│ • Consensus Score: 97.2%                                                                                        │
+│ • Cryptographic Merkle Root: 9e1bcc836233f3affb420b1129f5277e9a8391c8e0026d5c9e9a21b21d7c6ed0                    │
+│ • Verified Profiles: Twitter/X, LinkedIn, Instagram, Web                                                        │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+### Steps 3 & 4: Blockchain Ledger Anchor & On-Chain Audit
+```
+═══ STEP 3: UPLOAD CONSENSUS RECORD TO BLOCKCHAIN ═══
+┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Blockchain Field    ┃ Value                                                              ┃
+┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Blockchain Network  │ Foundry Anvil (Chain ID: 31337)                                    │
+│ Smart Contract      │ 0xc3e53F4d16Ae77Db1c982e75a937B9f60FE63690                         │
+│ Consensus Record ID │ #1                                                                 │
+│ Transaction Hash    │ 0x9d038b683c32d77876f60f896e7af7b9234b77a174dbf6e637654a3142fd91e1 │
+│ Block Number        │ 34                                                                 │
+│ Gas Used            │ 762,321                                                            │
+│ Merkle Root         │ 9e1bcc836233f3affb420b1129f5277e9a8391c8e0026d5c9e9a21b21d7c6ed0   │
+│ Submitting Wallet   │ 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266                         │
+└─────────────────────┴────────────────────────────────────────────────────────────────────┘
+
+═══ STEP 4: INDEPENDENT ON-CHAIN VERIFICATION ═══
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Verification Check                     ┃ Result                     ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Face Hash Verified On-Chain            │ ✅ MATCH                   │
+│ Merkle Root Verified On-Chain          │ ✅ MATCH                   │
+│ Smart Contract verifyConsensusRecord() │ ✅ VERIFIED                │
+│ Finalized Entity Name                  │ Alex Rivera                │
+│ Tamper Evidence Status                 │ AUTHENTIC & TAMPER-EVIDENT │
+└────────────────────────────────────────┴────────────────────────────┘
+```
+
+---
+
+## 🧪 Automated Test Suite
+
+The test suite covers end-to-end unit, integration, and security test cases:
+
+```bash
+python -m pytest tests/test_pipeline.py -v
+```
+
+### Test Coverage Highlights
+- `test_hashing_utilities`: Biometric float array determinism and bytes32 conversion.
+- `test_cosine_and_merkle_roots`: Mathematical cosine metrics and Merkle tree root derivation.
+- `test_face_engine`: RetinaFace detection, ArcFace embedding extraction, and quality blur scoring.
+- `test_multi_site_concurrent_search`: Thread pool concurrency across all target platforms.
+- `test_identity_consensus_and_disparity_reporting`: Quorum calculation and 3-attempt disparity reporting.
+- `test_blockchain_consensus_lifecycle_and_tamper_defense`: Contract deployment, Anvil mining, and tampering rejection.
+- `test_retry_mechanism_on_disparity`: Verifies 2 automatic retries (3 total attempts) with adaptive bounding crop padding.
+- `test_authentic_social_handle_and_profile_validation`: Strict validation of profile URLs, fan account rejection, and canonical handle extraction.
+
+```
+============================= 15 passed in 40.96s =============================
+```
+
+---
+
+## 📁 Project Directory Layout
+
+```
+Task3-HHG/
+├── contracts/
+│   ├── FaceMatchRegistry.sol     # Solidity 0.8.20 consensus registry smart contract
+│   └── FaceMatchRegistry.json    # Compiled contract ABI & bytecode artifact
+├── samples/
+│   └── test_face.jpg             # Reference portrait sample for testing
+├── src/
+│   ├── __init__.py
+│   ├── blockchain_engine.py      # Web3.py client, Anvil daemon auto-launcher, contract caller
+│   ├── consensus_engine.py       # Quorum scoring, Merkle tree root, and disparity protocol
+│   ├── contract_artifact.json    # Bundled EVM bytecode and ABI
+│   ├── face_engine.py            # RetinaFace + ArcFace biometrics, alignment, quality gating
+│   ├── search_engine.py          # 2-Stage concurrent multi-site search engine
+│   └── utils.py                  # Cryptographic hashing, cosine metrics, resilient HTTP sessions
+├── tests/
+│   └── test_pipeline.py          # Complete 15-test pytest suite
+├── .env.example                  # Environment configuration template
+├── .gitignore                    # Git ignore file for Python, Foundry, and temporary files
+├── LICENSE                       # MIT License
+├── pipeline.py                   # Main CLI entrypoint (Typer + Rich)
+├── requirements.txt              # Production Python package requirements
+├── verify.py                     # Independent on-chain audit and tamper verification CLI
+└── README.md                     # Comprehensive documentation
+```
+
+---
+
+## ⚠️ Known Limitations
+
+- **False positives/negatives**: cosine similarity thresholds (≥0.70) are a heuristic, not a guarantee — look-alikes, siblings, or low-quality avatars can produce incorrect matches or missed matches.
+- **Search coverage depends on SerpAPI/Google indexing**: private accounts, region-locked results, and platforms with aggressive bot detection may return incomplete or stale data.
+- **No liveness detection**: the pipeline matches against static portrait imagery only; it does not verify the input photo was taken of a live, present person.
+- **Local-chain only by default**: the smart contract ledger targets a local Foundry Anvil node (chain ID 31337) for demonstration — it is not deployed to a public testnet or mainnet out of the box.
+- **Rate limits**: SerpAPI's free tier caps monthly searches; heavy or repeated pipeline runs will exhaust quota quickly.
+
+---
+
+## 🤲 Contributing
+
+Issues and pull requests are welcome. Before submitting a PR:
+1. Run the test suite (`python -m pytest tests/test_pipeline.py -v`) and make sure all tests pass.
+2. Keep new features consistent with the [Intended Use & Scope](#-face-id--multi-site-identity-consensus--blockchain-pipeline) note at the top of this README.
+3. Avoid committing real personal data, API keys, or `.env` files (see `.gitignore`).
+
+---
+
+## 📄 License
+
+This project is open-source and licensed under the [MIT License](LICENSE).

@@ -1,7 +1,7 @@
 import json
 import os
 import sys
-from typing import Optional
+from typing import List, Optional
 from dotenv import load_dotenv
 from rich import print as rprint
 from rich.console import Console
@@ -17,13 +17,14 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 load_dotenv()
 
 from src.blockchain_engine import BlockchainEngine
+from src.consensus_engine import IdentityConsensusEngine, IdentityConsensusResult
 from src.face_engine import FaceEngine
 from src.search_engine import SearchEngine
-from src.utils import identify_platform
+from src.utils import identify_platform, select_image_file
 
 app = typer.Typer(
     name="face-blockchain-pipeline",
-    help="End-to-End Face ID + Reverse Search + Blockchain Verification Pipeline",
+    help="End-to-End Face ID + Multi-Site Identity Consensus + Blockchain Verification Pipeline",
     add_completion=False,
 )
 console = Console()
@@ -31,11 +32,18 @@ console = Console()
 
 @app.command()
 def run(
-    image: str = typer.Option(
-        ...,
+    image: Optional[str] = typer.Option(
+        None,
         "--image",
         "-i",
-        help="Path to input photo for face detection & encoding.",
+        help="Path to input photo for face detection & encoding (opens system file dialog if omitted).",
+    ),
+    choose_file: bool = typer.Option(
+        False,
+        "--choose-file",
+        "--browse",
+        "-b",
+        help="Open native system file chooser dialog to pick an image from your system.",
     ),
     detector: str = typer.Option(
         "retinaface",
@@ -72,6 +80,11 @@ def run(
         "--demo-search",
         help="Run search step in demo mode if no live SerpAPI key is available.",
     ),
+    simulate_disparity: bool = typer.Option(
+        False,
+        "--simulate-disparity",
+        help="Simulate disparate cross-site entities to test retry protocol and disparity reporting.",
+    ),
     save_json: Optional[str] = typer.Option(
         None,
         "--save-json",
@@ -81,18 +94,34 @@ def run(
 ):
     """
     Executes the full pipeline:
-    1. Detect & encode face (RetinaFace + ArcFace)
-    2. Reverse image search (Google Lens via SerpAPI)
-    3. Upload match data to blockchain (Foundry Anvil)
-    4. Re-verify data against immutable on-chain record
+    1. Detect & encode face (RetinaFace + ArcFace) + Portrait Quality Gate
+    2. Simultaneously check multiple sites & evaluate identity consensus (with up to 2 retries)
+    3. Finalize on single verified individual or provide full disparity disclosure
+    4. Upload multi-site consensus record & Merkle root to Foundry Anvil blockchain
+    5. Re-verify data against immutable on-chain record
     """
     console.print(
         Panel.fit(
-            "[bold cyan]🛡️  FACE ID + BLOCKCHAIN VERIFICATION PIPELINE[/bold cyan]\n"
-            "[dim]Biometric Analysis → Reverse Image Search → Immutable On-Chain Registry[/dim]",
+            "[bold cyan]🛡️  FACE ID + MULTI-SITE IDENTITY CONSENSUS & BLOCKCHAIN PIPELINE[/bold cyan]\n"
+            "[dim]Biometric Analysis → Simultaneous Multi-Site Consensus → Immutable On-Chain Registry[/dim]",
             border_style="bright_blue",
         )
     )
+
+    # Allow user to choose file from system if not specified or browse requested
+    if choose_file or not image:
+        console.print("[cyan]📂 Opening system file dialog to choose an image from your computer...[/cyan]")
+        chosen = select_image_file(prompt_if_cancelled=True)
+        if not chosen:
+            console.print("[bold red]❌ No image file selected. Exiting.[/bold red]")
+            raise typer.Exit(code=1)
+        image = chosen
+
+    if not os.path.exists(image):
+        console.print(f"[bold red]❌ Specified image not found:[/bold red] {image}")
+        raise typer.Exit(code=1)
+
+    console.print(f"[bold green]✔ Image selected from system:[/bold green] [bold white]{os.path.abspath(image)}[/bold white]\n")
 
     resolved_api_key = serpapi_key or os.getenv("SERPAPI_KEY")
     is_demo = demo_search or not resolved_api_key
@@ -100,7 +129,7 @@ def run(
     if is_demo and not demo_search:
         console.print(
             "[yellow]⚠️  Notice: SERPAPI_KEY not found in environment. "
-            "Proceeding with demo search mode. Set SERPAPI_KEY in .env for live searches.[/yellow]\n"
+            "Proceeding with demo multi-site search mode. Set SERPAPI_KEY in .env for live queries.[/yellow]\n"
         )
 
     # -------------------------------------------------------------
@@ -128,44 +157,135 @@ def run(
     face_table.add_row("Confidence Score", f"{face_result.confidence:.4f}")
     face_table.add_row("Embedding Dimensions", f"{len(face_result.embedding)} floats (ArcFace)")
     face_table.add_row("Face Fingerprint (SHA-256)", f"[bold white]{face_result.face_hash}[/bold white]")
+    if face_result.quality:
+        face_table.add_row("Blur Variance", f"{face_result.quality.get('blur_variance', 0.0):.2f} (Sharp)")
     face_table.add_row("Cropped Face Path", face_result.cropped_image_path)
     console.print(face_table)
 
     # -------------------------------------------------------------
-    # STEP 2: Reverse Image Search (Google Lens / SerpAPI)
+    # STEP 2: Simultaneous Multi-Site Search & Identity Consensus
     # -------------------------------------------------------------
-    console.print("\n[bold yellow]═══ STEP 2: REVERSE IMAGE SEARCH (SOCIAL MATCH) ═══[/bold yellow]")
+    console.print("\n[bold yellow]═══ STEP 2: SIMULTANEOUS MULTI-SITE SEARCH & IDENTITY CONSENSUS ═══[/bold yellow]")
+    console.print("[dim]Simultaneously querying multiple platforms to verify all sites finalize on the same person...[/dim]\n")
+
+    search_engine = SearchEngine(api_key=resolved_api_key)
+    consensus_engine = IdentityConsensusEngine()
+
+    target_platforms = ["Twitter/X", "LinkedIn", "GitHub", "Instagram", "Web"]
+
+    def _execute_search_attempt(retry_lvl: int):
+        # In retry attempts, dynamically adapt crop padding to resolve boundary ambiguities
+        padding = 0.10 + (retry_lvl * 0.05)
+        crop_path = face_engine.analyze(image, crop_padding=padding).cropped_image_path
+        return search_engine.search_multi_site(
+            image_path=crop_path,
+            target_platforms=target_platforms,
+            retry_level=retry_lvl,
+            demo_mode=is_demo,
+            simulate_disparity=simulate_disparity,
+        )
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        task = progress.add_task("Searching web & social media for matching posts...", total=None)
-        search_engine = SearchEngine(api_key=resolved_api_key)
-        search_match = search_engine.search(
-            image_path=face_result.cropped_image_path,
-            prefer_social=True,
-            demo_mode=is_demo,
+        task = progress.add_task("Running concurrent multi-site search and cross-verifying identity...", total=None)
+        consensus_result = consensus_engine.run_consensus_pipeline(
+            search_engine_func=_execute_search_attempt,
+            face_engine=face_engine,
+            input_face_hash=face_result.face_hash,
+            input_embedding=face_result.embedding,
+            max_retries=2,  # Try whole pipeline up to 2 times more on disparity
         )
         progress.update(task, completed=True)
 
-    search_table = Table(show_header=True, header_style="bold magenta", border_style="dim")
-    search_table.add_column("Match Property", style="cyan")
-    search_table.add_column("Details", style="green")
-    search_table.add_row("Match Title", search_match.title)
-    search_table.add_row("Source / Platform", f"[bold yellow]{search_match.platform}[/bold yellow] ({search_match.source})")
-    search_table.add_row("Discovered URL", f"[underline blue]{search_match.link}[/underline blue]")
-    search_table.add_row("Is Social Media", "✅ Yes" if search_match.is_social else "ℹ️ Web")
-    search_table.add_row("Match Fingerprint (SHA-256)", f"[bold white]{search_match.match_hash}[/bold white]")
-    search_table.add_row("Timestamp (UTC)", search_match.timestamp_utc)
-    if search_match.raw_snippet:
-        search_table.add_row("Snippet", search_match.raw_snippet[:100] + "...")
-    console.print(search_table)
+    # Render Cross-Site Findings & Consensus Table
+    consensus_table = Table(
+        title="Cross-Site Identity Consensus Matrix",
+        show_header=True,
+        header_style="bold magenta",
+        border_style="dim",
+    )
+    consensus_table.add_column("Site / Platform", style="cyan", no_wrap=True)
+    consensus_table.add_column("Discovered Profile URL", style="underline blue")
+    consensus_table.add_column("Extracted Entity / Handle", style="yellow")
+    consensus_table.add_column("Facial Cosine Sim", style="white", justify="center")
+    consensus_table.add_column("Consensus Verdict", style="green", justify="center")
+
+    for ev in consensus_result.site_evidences:
+        handle_text = ev.detected_name or "Unknown"
+        if ev.detected_handle:
+            handle_text += f" ({ev.detected_handle})"
+
+        if ev.final_vote == "CONFIRMED_MATCH":
+            verdict_badge = "[bold green]✅ SAME PERSON[/bold green]"
+            sim_text = f"{ev.biometric_similarity * 100:.1f}%"
+        elif ev.final_vote == "NO_PROFILE":
+            verdict_badge = "[dim]⚪ NO PROFILE[/dim]"
+            sim_text = "N/A"
+        else:
+            verdict_badge = "[bold red]❌ DIVERGENT[/bold red]"
+            sim_text = f"{ev.biometric_similarity * 100:.1f}%"
+
+        # Format URL as terminal hyperlink so clicks always resolve to full URL
+        if ev.url and ev.url.startswith("http"):
+            url_cell = f"[link={ev.url}]{ev.url}[/link]"
+        else:
+            url_cell = f"[dim]{ev.url}[/dim]"
+
+        consensus_table.add_row(
+            ev.platform,
+            url_cell,
+            handle_text,
+            sim_text,
+            verdict_badge,
+        )
+
+    console.print(consensus_table)
+
+    # Print unabbreviated direct links for 100% transparent manual verification
+    console.print("\n[bold cyan]🔗 Authenticated Direct Profile Links:[/bold cyan]")
+    for ev in consensus_result.site_evidences:
+        if ev.final_vote == "CONFIRMED_MATCH" and ev.url.startswith("http"):
+            console.print(f"  • [bold white]{ev.platform:10s}[/bold white] → [bold underline blue link={ev.url}]{ev.url}[/bold underline blue link={ev.url}] [dim]({ev.detected_name})[/dim]")
+        elif ev.final_vote == "DIVERGENT" and ev.url.startswith("http"):
+            console.print(f"  • [bold red]{ev.platform:10s}[/bold red] → [underline red link={ev.url}]{ev.url}[/underline red link={ev.url}] [red](Divergent: {ev.detected_name})[/red]")
+        elif ev.final_vote == "NO_PROFILE":
+            console.print(f"  • [dim]{ev.platform:10s} → No authentic profile found[/dim]")
+    console.print()
+
+    # Handle the Disparate Entities Situation or Confirmed Consensus
+    if consensus_result.disparate_situation_detected:
+        console.print(
+            Panel(
+                f"[bold red]⚠️ SITUATION: DISPARATE ENTITIES DETECTED ACROSS CHECKED SITES[/bold red]\n\n"
+                f"• [bold]Attempts Executed:[/bold] {consensus_result.attempts_taken} attempts (including 2 automatic pipeline retries)\n"
+                f"• [bold]Diagnostic Summary:[/bold] {consensus_result.disparate_summary}\n"
+                f"• [bold]Finding Breakdown:[/bold] Not all sites finalized on the same person. The model identified conflicting identities across platforms.\n"
+                f"• [bold]All Discovered Finds:[/bold] Documented in the table above and captured in the forensic report.",
+                title="[bold red]Disparate Entities Report[/bold red]",
+                border_style="red",
+            )
+        )
+    else:
+        console.print(
+            Panel(
+                f"[bold green]🤝 IDENTITY CONSENSUS REACHED: ALL SITES FINALIZE ON THE SAME PERSON[/bold green]\n\n"
+                f"• [bold]Finalized Person:[/bold] [bold white]{consensus_result.finalized_person_name}[/bold white]\n"
+                f"• [bold]Verified Sites Agreement:[/bold] {consensus_result.verified_site_count} of {consensus_result.total_sites_checked} platforms in full consensus\n"
+                f"• [bold]Consensus Score:[/bold] [bold yellow]{consensus_result.consensus_score * 100:.1f}%[/bold yellow]\n"
+                f"• [bold]Cryptographic Merkle Root:[/bold] [bold white]{consensus_result.merkle_root}[/bold white]\n"
+                f"• [bold]Verified Profiles:[/bold] {', '.join(consensus_result.verified_platforms)}",
+                title="[bold green]Consensus Verification Quorum[/bold green]",
+                border_style="green",
+            )
+        )
 
     # -------------------------------------------------------------
     # STEP 3: Blockchain Upload (Foundry Anvil)
     # -------------------------------------------------------------
-    console.print("\n[bold yellow]═══ STEP 3: UPLOAD MATCH RECORD TO BLOCKCHAIN ═══[/bold yellow]")
+    console.print("\n[bold yellow]═══ STEP 3: UPLOAD CONSENSUS RECORD TO BLOCKCHAIN ═══[/bold yellow]")
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -184,22 +304,28 @@ def run(
         else:
             deployed_addr = blockchain.contract_address
 
-        progress.update(task, description="Broadcasting recordMatch transaction to Anvil...")
+        progress.update(task, description="Broadcasting recordConsensusMatch transaction to Anvil...")
         metadata_payload = {
-            "title": search_match.title,
-            "source": search_match.source,
-            "snippet": search_match.raw_snippet or "",
+            "finalized_person": consensus_result.finalized_person_name,
+            "consensus_score": consensus_result.consensus_score,
+            "verified_site_count": consensus_result.verified_site_count,
+            "total_sites_checked": consensus_result.total_sites_checked,
+            "disparate_situation": consensus_result.disparate_situation_detected,
             "detector": face_result.detector,
             "model": face_result.model,
             "confidence": face_result.confidence,
-            "discovered_at": search_match.timestamp_utc,
+            "attempts_taken": consensus_result.attempts_taken,
         }
 
-        record_res = blockchain.record_match(
+        # Submit consensus record to smart contract
+        consensus_record_res = blockchain.record_consensus_match(
             face_hash=face_result.face_hash,
-            match_hash=search_match.match_hash,
-            match_url=search_match.link,
-            platform=search_match.platform,
+            merkle_root=consensus_result.merkle_root,
+            entity_name=consensus_result.finalized_person_name,
+            platforms=consensus_result.verified_platforms or ["Web"],
+            match_urls=consensus_result.verified_urls or [image],
+            consensus_score=consensus_result.consensus_score,
+            verified_site_count=max(1, consensus_result.verified_site_count),
             metadata=metadata_payload,
         )
         progress.update(task, completed=True)
@@ -208,13 +334,14 @@ def run(
     chain_table.add_column("Blockchain Field", style="cyan")
     chain_table.add_column("Value", style="green")
     chain_table.add_row("Blockchain Network", f"Foundry Anvil (Chain ID: {blockchain.w3.eth.chain_id})")
-    chain_table.add_row("Smart Contract", f"[bold yellow]{record_res.contract_address}[/bold yellow]")
-    chain_table.add_row("Record ID", f"[bold white]#{record_res.record_id}[/bold white]")
-    chain_table.add_row("Transaction Hash", f"[bold green]{record_res.tx_hash}[/bold green]")
-    chain_table.add_row("Block Number", str(record_res.block_number))
-    chain_table.add_row("Gas Used", f"{record_res.gas_used:,}")
-    chain_table.add_row("Submitting Wallet", record_res.recorded_by)
-    chain_table.add_row("Block Timestamp", str(record_res.timestamp))
+    chain_table.add_row("Smart Contract", f"[bold yellow]{consensus_record_res.contract_address}[/bold yellow]")
+    chain_table.add_row("Consensus Record ID", f"[bold white]#{consensus_record_res.consensus_id}[/bold white]")
+    chain_table.add_row("Transaction Hash", f"[bold green]{consensus_record_res.tx_hash}[/bold green]")
+    chain_table.add_row("Block Number", str(consensus_record_res.block_number))
+    chain_table.add_row("Gas Used", f"{consensus_record_res.gas_used:,}")
+    chain_table.add_row("Merkle Root", f"[bold white]{consensus_record_res.merkle_root}[/bold white]")
+    chain_table.add_row("Submitting Wallet", consensus_record_res.recorded_by)
+    chain_table.add_row("Block Timestamp", str(consensus_record_res.timestamp))
     console.print(chain_table)
 
     # -------------------------------------------------------------
@@ -227,10 +354,10 @@ def run(
         console=console,
     ) as progress:
         task = progress.add_task("Re-querying on-chain state and validating cryptographic proofs...", total=None)
-        verification = blockchain.verify_record(
-            record_id=record_res.record_id,
+        verification = blockchain.verify_consensus_record(
+            consensus_id=consensus_record_res.consensus_id,
             expected_face_hash=face_result.face_hash,
-            expected_match_hash=search_match.match_hash,
+            expected_merkle_root=consensus_result.merkle_root,
         )
         progress.update(task, completed=True)
 
@@ -238,22 +365,25 @@ def run(
     ver_table.add_column("Verification Check", style="cyan")
     ver_table.add_column("Result", style="green")
     ver_table.add_row("Face Hash Verified On-Chain", "✅ MATCH" if verification.face_hash_matches else "❌ MISMATCH")
-    ver_table.add_row("Match Hash Verified On-Chain", "✅ MATCH" if verification.match_hash_matches else "❌ MISMATCH")
-    ver_table.add_row("Smart Contract verifyRecord()", "✅ VERIFIED" if verification.is_verified else "❌ FAILED")
+    ver_table.add_row("Merkle Root Verified On-Chain", "✅ MATCH" if verification.merkle_root_matches else "❌ MISMATCH")
+    ver_table.add_row("Smart Contract verifyConsensusRecord()", "✅ VERIFIED" if verification.is_verified else "❌ FAILED")
+    ver_table.add_row("Finalized Entity Name", verification.entity_name)
     ver_table.add_row("Tamper Evidence Status", "[bold green]AUTHENTIC & TAMPER-EVIDENT[/bold green]" if verification.is_verified else "[bold red]TAMPERED / CORRUPT[/bold red]")
     console.print(ver_table)
 
     # Final summary panel
     console.print(
         Panel(
-            f"[bold green]🎉 PIPELINE COMPLETED SUCCESSFULLY![/bold green]\n\n"
-            f"• [bold]Record ID:[/bold] #{record_res.record_id}\n"
-            f"• [bold]Contract:[/bold] {record_res.contract_address}\n"
-            f"• [bold]Tx Hash:[/bold] {record_res.tx_hash}\n"
-            f"• [bold]Face Hash:[/bold] {face_result.face_hash}\n"
-            f"• [bold]Discovered Post:[/bold] {search_match.link}\n"
-            f"• [bold]Status:[/bold] [bold green]VERIFIED ON ANVIL BLOCKCHAIN[/bold green]",
-            title="[bold white]Verification Summary[/bold white]",
+            f"[bold green]🎉 MULTI-SITE PIPELINE COMPLETED SUCCESSFULLY![/bold green]\n\n"
+            f"• [bold]Consensus Record ID:[/bold] #{consensus_record_res.consensus_id}\n"
+            f"• [bold]Contract:[/bold] {consensus_record_res.contract_address}\n"
+            f"• [bold]Finalized Identity:[/bold] {consensus_result.finalized_person_name}\n"
+            f"• [bold]Consensus Score:[/bold] {consensus_result.consensus_score * 100:.1f}%\n"
+            f"• [bold]Verified Sites Agreement:[/bold] {consensus_result.verified_site_count} platforms\n"
+            f"• [bold]Merkle Root:[/bold] {consensus_record_res.merkle_root}\n"
+            f"• [bold]Tx Hash:[/bold] {consensus_record_res.tx_hash}\n"
+            f"• [bold]Status:[/bold] [bold green]CONFIRMED & IMMUTABLE ON BLOCKCHAIN[/bold green]",
+            title="[bold white]Execution Summary[/bold white]",
             border_style="green",
         )
     )
@@ -263,9 +393,9 @@ def run(
         report = {
             "status": "SUCCESS",
             "face_analysis": face_result.to_dict(),
-            "search_match": search_match.to_dict(),
-            "blockchain_record": record_res.to_dict(),
-            "verification": verification.to_dict(),
+            "identity_consensus": consensus_result.to_dict(),
+            "blockchain_record": consensus_record_res.to_dict(),
+            "on_chain_verification": verification.to_dict(),
         }
         with open(save_json, "w") as f:
             json.dump(report, f, indent=2)
