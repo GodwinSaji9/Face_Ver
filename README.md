@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🛡️ Face ID + Multi-Site Identity Consensus & Blockchain Pipeline
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
@@ -398,3 +399,7 @@ Issues and pull requests are welcome. Before submitting a PR:
 ## 📄 License
 
 This project is open-source and licensed under the [MIT License](LICENSE).
+=======
+# Face_Ver
+Face Identification and Blockchain verification
+>>>>>>> 958921131b2daf609a4d9b2365c194f3d22045b6
