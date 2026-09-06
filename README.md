@@ -386,19 +386,7 @@ Task3-HHG/
 
 ---
 
-## 🤲 Contributing
-
-Issues and pull requests are welcome. Before submitting a PR:
-1. Run the test suite (`python -m pytest tests/test_pipeline.py -v`) and make sure all tests pass.
-2. Keep new features consistent with the [Intended Use & Scope](#-face-id--multi-site-identity-consensus--blockchain-pipeline) note at the top of this README.
-3. Avoid committing real personal data, API keys, or `.env` files (see `.gitignore`).
-
----
-
 ## 📄 License
 
 This project is open-source and licensed under the [MIT License](LICENSE).
 =======
-# Face_Ver
-Face Identification and Blockchain verification
->>>>>>> 958921131b2daf609a4d9b2365c194f3d22045b6
