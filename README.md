@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # 🛡️ Face ID + Multi-Site Identity Consensus & Blockchain Pipeline
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
