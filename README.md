@@ -143,7 +143,7 @@ struct ConsensusRecord {
 ### Prerequisites
 - **Python 3.10+** (Tested on Python 3.13)
 - **Foundry Anvil** (Local EVM node, install via `foundryup` or [Foundry releases](https://github.com/foundry-rs/foundry))
-- **SerpAPI Key** (Free tier account at [serpapi.com](https://serpapi.com))
+- **serper.dev API Key** 
 
 ### 1. Clone Repository & Setup Virtual Environment
 ```bash
@@ -169,11 +169,11 @@ cp .env.example .env
 ```
 Edit `.env`:
 ```ini
-SERPAPI_KEY=your_serpapi_key_here
+serper.dev_KEY=your_serper.dev_key_here
 ANVIL_RPC_URL=http://127.0.0.1:8545
 ```
 
-> **Note on SerpAPI usage:** the free tier includes a limited number of searches per month (check current limits at [serpapi.com/pricing](https://serpapi.com/pricing)). Each pipeline run against 5 platforms consumes multiple search calls, so budget accordingly if you're testing repeatedly.
+> **Note on serper.dev usage:** the free tier includes a limited number of searches per month
 
 ### 4. Start a Local Anvil Node
 ```bash
@@ -379,10 +379,10 @@ Task3-HHG/
 ## ⚠️ Known Limitations
 
 - **False positives/negatives**: cosine similarity thresholds (≥0.70) are a heuristic, not a guarantee — look-alikes, siblings, or low-quality avatars can produce incorrect matches or missed matches.
-- **Search coverage depends on SerpAPI/Google indexing**: private accounts, region-locked results, and platforms with aggressive bot detection may return incomplete or stale data.
+- **Search coverage depends on serper.dev/Google indexing**: private accounts, region-locked results, and platforms with aggressive bot detection may return incomplete or stale data.
 - **No liveness detection**: the pipeline matches against static portrait imagery only; it does not verify the input photo was taken of a live, present person.
 - **Local-chain only by default**: the smart contract ledger targets a local Foundry Anvil node (chain ID 31337) for demonstration — it is not deployed to a public testnet or mainnet out of the box.
-- **Rate limits**: SerpAPI's free tier caps monthly searches; heavy or repeated pipeline runs will exhaust quota quickly.
+- **Rate limits**: serper.dev's free tier caps monthly searches; heavy or repeated pipeline runs will exhaust quota quickly.
 
 ---
 
