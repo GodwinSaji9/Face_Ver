@@ -143,6 +143,51 @@ def string_similarity(str1: str, str2: str) -> float:
     return difflib.SequenceMatcher(None, s1, s2).ratio()
 
 
+def strict_name_match(candidate_name: str, entity_name: str) -> bool:
+    if not candidate_name or not entity_name:
+        return False
+
+    c_clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', candidate_name)
+    c_clean = re.sub(r'\s*[-|•–—].*$', '', c_clean).strip()
+
+    e_tokens = [w.lower() for w in re.findall(r'[A-Za-z]+', entity_name)]
+    c_tokens = [w.lower() for w in re.findall(r'[A-Za-z]+', c_clean)]
+
+    if not e_tokens or not c_tokens:
+        return False
+
+    for t in e_tokens:
+        if t not in c_tokens:
+            return False
+
+    disallowed_extras = {
+        'pictures', 'photos', 'photo', 'fan', 'fans', 'fc', 'club', 'updates', 'update',
+        'edits', 'daily', 'army', 'page', 'tribute', 'parody', 'quotes', 'status',
+        'video', 'videos', 'student', 'news', 'official', 'memes', 'gallery', 'community'
+    }
+    for ex in c_tokens:
+        if ex in disallowed_extras:
+            return False
+
+    extra_tokens = [t for t in c_tokens if t not in e_tokens]
+    allowed_honorifics = {
+        'dr', 'prof', 'sir', 'shri', 'mr', 'mrs', 'ms', 'miss', 'lord', 'lady',
+        'hon', 'rev', 'pastor', 'sheikh', 'rabbi', 'capt', 'captain', 'col', 'gen',
+        'sen', 'gov', 'mayor', 'esq', 'jr', 'sr', 'ii', 'iii', 'iv', 'phd', 'md',
+        'actor', 'actress', 'director', 'producer', 'writer', 'author', 'artist',
+        'singer', 'musician', 'scientist', 'engineer', 'researcher', 'scholar',
+        'founder', 'ceo', 'cto', 'coo', 'cfo', 'cmo', 'vp', 'president', 'chair',
+        'padma', 'cm', 'pm', 'minister', 'leader', 'coach', 'chef'
+    }
+    for ex in extra_tokens:
+        if len(ex) == 1:
+            continue
+        if ex not in allowed_honorifics:
+            return False
+
+    return True
+
+
 def hash_payload(payload: Any) -> str:
     """
     Computes a deterministic SHA-256 hex digest of any string or JSON-serializable dictionary.
@@ -212,7 +257,7 @@ def create_resilient_session(pool_size: int = 20, max_retries: int = 3) -> reque
         total=max_retries,
         backoff_factor=0.3,
         status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "OPTIONS"],
+        allowed_methods=["HEAD", "GET", "OPTIONS", "POST"],
     )
     adapter = HTTPAdapter(
         pool_connections=pool_size,
@@ -383,3 +428,16 @@ def select_image_file(prompt_if_cancelled: bool = True, use_gui: bool = True) ->
         return None
 
     return None
+
+def cleanup_temporary_files(directory='temp_crops'):
+    count = 0
+    if os.path.exists(directory):
+        for fname in os.listdir(directory):
+            fpath = os.path.join(directory, fname)
+            if os.path.isfile(fpath):
+                try:
+                    os.remove(fpath)
+                    count += 1
+                except Exception:
+                    pass
+    return count

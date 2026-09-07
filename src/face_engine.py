@@ -86,6 +86,20 @@ class FaceEngine:
     ):
         self.detector = detector
         self.model = model
+        self._temp_crops = []
+
+
+    def cleanup(self) -> int:
+        removed = 0
+        for p in getattr(self, '_temp_crops', []):
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                    removed += 1
+                except Exception:
+                    pass
+        self._temp_crops = []
+        return removed
 
     def analyze(
         self,
@@ -166,6 +180,7 @@ class FaceEngine:
 
         # Step 2: Crop the detected face for reverse image searching
         cropped_path = crop_face(prepared_path, facial_area, padding_pct=crop_padding)
+        if hasattr(self, '_temp_crops'): self._temp_crops.append(cropped_path)
 
         # Step 3: Extract facial embedding using ArcFace (or Ensemble: ArcFace + Facenet512)
         if self.model.lower() in ("ensemble", "dual"):
@@ -225,51 +240,81 @@ class FaceEngine:
 
     def extract_embedding_only(self, image_path: str) -> List[float]:
         """
-        Fast direct embedding extractor for scraped avatars.
+        Fast direct embedding extractor for scraped avatars or URLs.
         Checks in-memory LRU cache first, then performs ArcFace / Ensemble feature extraction.
         """
-        # Check cache by exact path or cropped path
-        norm_path = os.path.normpath(image_path)
-        for cached in _EMBEDDING_CACHE.values():
-            cached_source = cached.get("source_image")
-            cached_cropped = cached.get("cropped_image_path")
-            if (cached_source and os.path.normpath(cached_source) == norm_path) or \
-               (cached_cropped and os.path.normpath(cached_cropped) == norm_path):
-                return cached["embedding"]
-
-        cache_key = self._get_cache_key(image_path, crop_padding=0.15)
-        if cache_key in _EMBEDDING_CACHE:
-            return _EMBEDDING_CACHE[cache_key]["embedding"]
-
-        from deepface import DeepFace
-
-        models = ["ArcFace", "Facenet512"] if self.model.lower() in ("ensemble", "dual") else [self.model]
-        all_embs: List[float] = []
-        for mod in models:
-            mod_emb: List[float] = []
-            primary_det = self.detector.split()[0].lower()
-            detectors_to_try = [primary_det, "opencv", "skip"]
-            for det in detectors_to_try:
-                try:
-                    res = DeepFace.represent(
-                        img_path=image_path,
-                        model_name=mod,
-                        detector_backend=det,
-                        enforce_detection=False,
-                    )
-                    if res and "embedding" in res[0]:
-                        v = np.array(res[0]["embedding"], dtype=np.float32)
-                        norm = np.linalg.norm(v)
-                        if norm > 0 and len(models) > 1:
-                            v = v / norm
-                        mod_emb = v.tolist()
-                        break
-                except Exception:
-                    continue
-            if mod_emb:
-                all_embs.extend(mod_emb)
-            elif len(models) == 1:
+        temp_download = None
+        if image_path.startswith(("http://", "https://")):
+            try:
+                import html as html_lib
+                import tempfile
+                from src.utils import create_resilient_session
+                sess = create_resilient_session(pool_size=5, max_retries=2)
+                sess.headers.update({
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                })
+                clean_url = html_lib.unescape(image_path)
+                resp = sess.get(clean_url, timeout=6)
+                if resp.status_code == 200 and resp.content and len(resp.content) > 100:
+                    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+                        tf.write(resp.content)
+                        temp_download = tf.name
+                    image_path = temp_download
+                else:
+                    return []
+            except Exception:
                 return []
+
+        try:
+            # Check cache by exact path or cropped path
+            norm_path = os.path.normpath(image_path)
+            for cached in _EMBEDDING_CACHE.values():
+                cached_source = cached.get("source_image")
+                cached_cropped = cached.get("cropped_image_path")
+                if (cached_source and os.path.normpath(cached_source) == norm_path) or \
+                   (cached_cropped and os.path.normpath(cached_cropped) == norm_path):
+                    return cached["embedding"]
+
+            cache_key = self._get_cache_key(image_path, crop_padding=0.15)
+            if cache_key in _EMBEDDING_CACHE:
+                return _EMBEDDING_CACHE[cache_key]["embedding"]
+
+            from deepface import DeepFace
+
+            models = ["ArcFace", "Facenet512"] if self.model.lower() in ("ensemble", "dual") else [self.model]
+            all_embs: List[float] = []
+            for mod in models:
+                mod_emb: List[float] = []
+                primary_det = self.detector.split()[0].lower()
+                detectors_to_try = [primary_det, "opencv", "skip"]
+                for det in detectors_to_try:
+                    try:
+                        res = DeepFace.represent(
+                            img_path=image_path,
+                            model_name=mod,
+                            detector_backend=det,
+                            enforce_detection=False,
+                        )
+                        if res and "embedding" in res[0]:
+                            v = np.array(res[0]["embedding"], dtype=np.float32)
+                            norm = np.linalg.norm(v)
+                            if norm > 0 and len(models) > 1:
+                                v = v / norm
+                            mod_emb = v.tolist()
+                            break
+                    except Exception:
+                        continue
+                if mod_emb:
+                    all_embs.extend(mod_emb)
+                elif len(models) == 1:
+                    return []
+        finally:
+            if temp_download and os.path.exists(temp_download):
+                try:
+                    os.remove(temp_download)
+                except Exception:
+                    pass
 
         if all_embs:
             _EMBEDDING_CACHE[cache_key] = {
@@ -323,6 +368,8 @@ class FaceEngine:
             resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
             out_path = os.path.join(temp_dir, f"clamped_{os.path.basename(image_path)}")
             resized.save(out_path, quality=95)
+            if hasattr(self, '_temp_crops'):
+                self._temp_crops.append(out_path)
             return out_path
         except Exception:
             return image_path

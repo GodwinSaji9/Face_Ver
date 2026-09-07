@@ -20,7 +20,7 @@ from src.blockchain_engine import BlockchainEngine
 from src.consensus_engine import IdentityConsensusEngine, IdentityConsensusResult
 from src.face_engine import FaceEngine
 from src.search_engine import SearchEngine
-from src.utils import identify_platform, select_image_file
+from src.utils import cleanup_temporary_files, identify_platform, select_image_file
 
 app = typer.Typer(
     name="face-blockchain-pipeline",
@@ -57,11 +57,33 @@ def run(
         "-m",
         help="Facial feature representation model (ArcFace, Facenet512, VGG-Face).",
     ),
+    threshold: float = typer.Option(
+        0.60,
+        "--threshold",
+        "-t",
+        help="Biometric cosine similarity threshold for ArcFace (default: 0.60, recommended 0.55-0.65).",
+    ),
+    cleanup: bool = typer.Option(
+        False,
+        "--cleanup",
+        help="Clean up temporary face crops and downloaded working files upon completion (default: False, preserves files).",
+    ),
     serpapi_key: Optional[str] = typer.Option(
         None,
         "--serpapi-key",
         "-k",
         help="SerpAPI key for live Google Lens reverse search (defaults to SERPAPI_KEY in .env).",
+    ),
+    serper_api_key: Optional[str] = typer.Option(
+        None,
+        "--serper-api-key",
+        help="Serper.dev API key for Google Search across platforms (defaults to SERPER_API_KEY in .env).",
+    ),
+    entity_name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-n",
+        help="Target entity or person name hint (e.g. --name 'Allu Arjun') for live search.",
     ),
     rpc_url: str = typer.Option(
         "http://127.0.0.1:8545",
@@ -124,13 +146,37 @@ def run(
     console.print(f"[bold green]✔ Image selected from system:[/bold green] [bold white]{os.path.abspath(image)}[/bold white]\n")
 
     resolved_api_key = serpapi_key or os.getenv("SERPAPI_KEY")
-    is_demo = demo_search or not resolved_api_key
+    resolved_serper_key = serper_api_key or os.getenv("SERPER_API_KEY")
+    has_live_search = bool(resolved_api_key or resolved_serper_key)
+    is_demo = demo_search or not has_live_search
 
-    if is_demo and not demo_search:
+    if not is_demo:
+        active_providers = []
+        if resolved_serper_key:
+            active_providers.append("[bold cyan]Serper.dev[/bold cyan] (Google Search API)")
+        if resolved_api_key:
+            active_providers.append("[bold cyan]SerpAPI[/bold cyan] (Google Lens)")
+        console.print(f"[green]✔ Live Search Engine:[/green] {' + '.join(active_providers)}\n")
+    elif not demo_search:
         console.print(
-            "[yellow]⚠️  Notice: SERPAPI_KEY not found in environment. "
-            "Proceeding with demo multi-site search mode. Set SERPAPI_KEY in .env for live queries.[/yellow]\n"
+            "[yellow]⚠️  Notice: Neither SERPER_API_KEY nor SERPAPI_KEY found in environment. "
+            "Proceeding with demo multi-site search mode. Set SERPER_API_KEY in .env for live queries.[/yellow]\n"
         )
+
+    # Resolve target entity hint if provided via CLI or inferred from filename
+    resolved_entity = entity_name
+    if not resolved_entity:
+        import re
+        base_fname = os.path.splitext(os.path.basename(image))[0]
+        clean_fname = re.sub(r'[_\-\.]+', ' ', base_fname).strip()
+        words = [w for w in clean_fname.split() if len(w) > 2 and not w.isdigit()]
+        if len(words) >= 2 and not any(w.lower() in ("img", "image", "photo", "pic", "face", "crop", "test") for w in words):
+            resolved_entity = " ".join(words).title()
+
+    if resolved_entity:
+        console.print(f"[bold cyan]🎯 Explicit Identity Override:[/bold cyan] [bold white]{resolved_entity}[/bold white]\n")
+    else:
+        console.print("[dim]🔍 Automated Face Identification: System will visually resolve identity from the face image.[/dim]\n")
 
     # -------------------------------------------------------------
     # STEP 1: Face Detection & ArcFace Biometric Encoding
@@ -168,8 +214,11 @@ def run(
     console.print("\n[bold yellow]═══ STEP 2: SIMULTANEOUS MULTI-SITE SEARCH & IDENTITY CONSENSUS ═══[/bold yellow]")
     console.print("[dim]Simultaneously querying multiple platforms to verify all sites finalize on the same person...[/dim]\n")
 
-    search_engine = SearchEngine(api_key=resolved_api_key)
-    consensus_engine = IdentityConsensusEngine()
+    search_engine = SearchEngine(
+        api_key=resolved_api_key,
+        serper_api_key=resolved_serper_key,
+    )
+    consensus_engine = IdentityConsensusEngine(biometric_threshold=threshold)
 
     target_platforms = ["Twitter/X", "LinkedIn", "GitHub", "Instagram", "Web"]
 
@@ -180,6 +229,7 @@ def run(
         return search_engine.search_multi_site(
             image_path=crop_path,
             target_platforms=target_platforms,
+            entity_hint=resolved_entity,
             retry_level=retry_lvl,
             demo_mode=is_demo,
             simulate_disparity=simulate_disparity,
@@ -256,13 +306,22 @@ def run(
     console.print()
 
     # Handle the Disparate Entities Situation or Confirmed Consensus
-    if consensus_result.disparate_situation_detected:
+    if consensus_result.disparate_situation_detected or not consensus_result.consensus_reached:
+        reasons = []
+        low_bio = [e for e in consensus_result.site_evidences if e.final_vote == "DIVERGENT" and not e.is_biometrically_verified]
+        name_diff = [e for e in consensus_result.site_evidences if e.final_vote == "DIVERGENT" and not e.is_name_aligned]
+        if low_bio:
+            reasons.append(f"{len(low_bio)} platform(s) with biometric similarity below threshold ({threshold*100:.0f}%)")
+        if name_diff:
+            reasons.append(f"{len(name_diff)} platform(s) with conflicting entity name")
+        breakdown_text = "; ".join(reasons) if reasons else "Conflicting identity evidence detected across platforms."
+
         console.print(
             Panel(
                 f"[bold red]⚠️ SITUATION: DISPARATE ENTITIES DETECTED ACROSS CHECKED SITES[/bold red]\n\n"
-                f"• [bold]Attempts Executed:[/bold] {consensus_result.attempts_taken} attempts (including 2 automatic pipeline retries)\n"
-                f"• [bold]Diagnostic Summary:[/bold] {consensus_result.disparate_summary}\n"
-                f"• [bold]Finding Breakdown:[/bold] Not all sites finalized on the same person. The model identified conflicting identities across platforms.\n"
+                f"• [bold]Attempts Executed:[/bold] {consensus_result.attempts_taken} attempt(s)\n"
+                f"• [bold]Diagnostic Summary:[/bold] {consensus_result.disparate_summary or 'Multi-site identity consensus could not be verified across quorum.'}\n"
+                f"• [bold]Finding Breakdown:[/bold] {breakdown_text}\n"
                 f"• [bold]All Discovered Finds:[/bold] Documented in the table above and captured in the forensic report.",
                 title="[bold red]Disparate Entities Report[/bold red]",
                 border_style="red",
@@ -371,10 +430,21 @@ def run(
     ver_table.add_row("Tamper Evidence Status", "[bold green]AUTHENTIC & TAMPER-EVIDENT[/bold green]" if verification.is_verified else "[bold red]TAMPERED / CORRUPT[/bold red]")
     console.print(ver_table)
 
-    # Final summary panel
+    # Final summary panel (distinguish authentic consensus vs disparity audit trail)
+    if consensus_result.consensus_reached and not consensus_result.disparate_situation_detected:
+        summary_title = "[bold white]Execution Summary[/bold white]"
+        summary_border = "green"
+        summary_status = "[bold green]CONFIRMED & IMMUTABLE ON BLOCKCHAIN[/bold green]"
+        summary_heading = "[bold green]🎉 MULTI-SITE IDENTITY CONSENSUS REACHED & RECORDED ON-CHAIN![/bold green]"
+    else:
+        summary_title = "[bold yellow]Execution Summary (Disparity Audit)[/bold yellow]"
+        summary_border = "yellow"
+        summary_status = "[bold yellow]DISPARITY AUDIT RECORDED ON BLOCKCHAIN (QUORUM FAILED)[/bold yellow]"
+        summary_heading = "[bold yellow]⚠️ MULTI-SITE PIPELINE FINISHED: DISPARITY AUDIT RECORDED ON-CHAIN[/bold yellow]"
+
     console.print(
         Panel(
-            f"[bold green]🎉 MULTI-SITE PIPELINE COMPLETED SUCCESSFULLY![/bold green]\n\n"
+            f"{summary_heading}\n\n"
             f"• [bold]Consensus Record ID:[/bold] #{consensus_record_res.consensus_id}\n"
             f"• [bold]Contract:[/bold] {consensus_record_res.contract_address}\n"
             f"• [bold]Finalized Identity:[/bold] {consensus_result.finalized_person_name}\n"
@@ -382,16 +452,16 @@ def run(
             f"• [bold]Verified Sites Agreement:[/bold] {consensus_result.verified_site_count} platforms\n"
             f"• [bold]Merkle Root:[/bold] {consensus_record_res.merkle_root}\n"
             f"• [bold]Tx Hash:[/bold] {consensus_record_res.tx_hash}\n"
-            f"• [bold]Status:[/bold] [bold green]CONFIRMED & IMMUTABLE ON BLOCKCHAIN[/bold green]",
-            title="[bold white]Execution Summary[/bold white]",
-            border_style="green",
+            f"• [bold]Status:[/bold] {summary_status}",
+            title=summary_title,
+            border_style=summary_border,
         )
     )
 
     # Optional JSON export
     if save_json:
         report = {
-            "status": "SUCCESS",
+            "status": "SUCCESS" if consensus_result.consensus_reached else "DISPARITY_AUDITED",
             "face_analysis": face_result.to_dict(),
             "identity_consensus": consensus_result.to_dict(),
             "blockchain_record": consensus_record_res.to_dict(),
@@ -400,6 +470,18 @@ def run(
         with open(save_json, "w") as f:
             json.dump(report, f, indent=2)
         console.print(f"\n[green]📁 Full report saved to:[/green] [bold]{os.path.abspath(save_json)}[/bold]")
+
+    # Intermediate file management: preserve crops by default so user can inspect them
+    if cleanup:
+        try:
+            cleaned = face_engine.cleanup() + cleanup_temporary_files()
+            if cleaned > 0:
+                console.print(f"[dim]🧹 Cleaned up {cleaned} temporary working file(s).[/dim]")
+        except Exception:
+            pass
+    else:
+        console.print(f"[dim]💾 Preserved face crop and intermediate working files in temp_crops/ (use --cleanup to delete).[/dim]")
+
 
 
 if __name__ == "__main__":
